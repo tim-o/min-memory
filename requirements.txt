@@ -1,5 +1,5 @@
 mcp>=1.16.0
-qdrant-client>=1.7.0
+qdrant-client>=1.16.0,<2.0.0
 fastembed>=0.3.0
 fastapi>=0.100.0
 fastapi-mcp>=0.4.0

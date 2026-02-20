@@ -230,9 +230,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         query = arguments["query"]
         query_embedding = list(embedder.embed([query]))[0].tolist()
         query_filter = build_filter(user=current_user)
-        results = qdrant.search(collection_name="memories", query_vector=query_embedding, query_filter=query_filter, limit=10)
+        response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=query_filter, limit=10)
         search_results = []
-        for result in results:
+        for result in response.points:
             title = result.payload.get("text", "")[:80]
             search_results.append({"id": result.id, "title": title, "url": f"mcp://memory/{result.id}"})
         return [TextContent(type="text", text=json.dumps(search_results, indent=2))]
@@ -294,12 +294,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if project and not explicit_scope:
             global_filter = build_filter(user=current_user, scope="global", memory_type=arguments.get("memory_type"), task_id=arguments.get("task_id"))
             project_filter = build_filter(user=current_user, project=project, memory_type=arguments.get("memory_type"), task_id=arguments.get("task_id"))
-            global_results = qdrant.search(collection_name="memories", query_vector=query_embedding, query_filter=global_filter, limit=limit // 2)
-            project_results = qdrant.search(collection_name="memories", query_vector=query_embedding, query_filter=project_filter, limit=limit // 2)
-            results = sorted(global_results + project_results, key=lambda x: x.score, reverse=True)[:limit]
+            global_response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=global_filter, limit=limit // 2)
+            project_response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=project_filter, limit=limit // 2)
+            results = sorted(global_response.points + project_response.points, key=lambda x: x.score, reverse=True)[:limit]
         else:
             query_filter = build_filter(user=current_user, scope=explicit_scope, project=project, memory_type=arguments.get("memory_type"), task_id=arguments.get("task_id"))
-            results = qdrant.search(collection_name="memories", query_vector=query_embedding, query_filter=query_filter, limit=limit)
+            results = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=query_filter, limit=limit).points
         score_threshold = arguments.get("score_threshold", 0.0)
         filtered_results = [r for r in results if r.score >= score_threshold]
         context = []
