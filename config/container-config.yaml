@@ -1,0 +1,24 @@
+spec:
+  containers:
+  - name: mcp-memory
+    image: us-central1-docker.pkg.dev/$GCP_PROJECT_ID/mcp-memory/server:latest
+    env:
+    - name: AUTH0_DOMAIN
+      value: "$AUTH0_DOMAIN"
+    - name: AUTH0_API_AUDIENCE
+      value: "$AUTH0_API_AUDIENCE"
+    - name: MCP_DATA_DIR
+      value: /mnt/disks/data
+    - name: PORT
+      value: "8080"
+    volumeMounts:
+    - name: data-disk
+      mountPath: /mnt/disks/data
+      readOnly: false
+    stdin: false
+    tty: false
+  restartPolicy: Always
+  volumes:
+  - name: data-disk
+    hostPath:
+      path: /mnt/disks/data

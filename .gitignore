@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+
+# Database files
+*.db
+*.sqlite
+
+# Backup files
+*.bk
+*.backup
+
+# Local data
+.tmp-data/
+.test-data/
+mcp-test-*/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Tool-specific local config
+.claude/
+.gemini/
+
+# Accidental artifacts
+pbcopy
+=*

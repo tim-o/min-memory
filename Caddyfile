@@ -1,0 +1,24 @@
+{
+    # Global options
+    admin off
+}
+
+# Replace STATIC_IP with your actual IP
+https://{$STATIC_IP} {
+    # Reverse proxy to MCP server
+    reverse_proxy mcp-memory:8080 {
+        # Handle SSE connections properly
+        flush_interval -1
+    }
+
+    # Enable compression
+    encode gzip
+
+    # Self-signed certificate for IP-based HTTPS
+    tls internal
+}
+
+# Redirect HTTP to HTTPS
+http://{$STATIC_IP} {
+    redir https://{host}{uri} permanent
+}
