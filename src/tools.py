@@ -214,6 +214,35 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["memory_id"]
             }
+        ),
+        Tool(
+            name="update_memory",
+            description="Update an existing memory's text and/or metadata fields. Only provided fields are changed.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "memory_type": {
+                        "type": "string",
+                        "enum": ["core_identity", "project_context", "task_instruction", "episodic"]
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["global", "project", "task"]
+                    },
+                    "entity": {"type": "string"},
+                    "project": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "status": {"type": "string"},
+                    "priority": {"type": "integer"}
+                },
+                "required": ["memory_id"]
+            }
         )
     ]
 
@@ -447,6 +476,36 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps({"status": "deleted", "memory_id": memory_id, "deleted_at": payload["deleted_at"]}))]
         except Exception as e:
             logger.error(f"Failed to delete memory: {e}")
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "update_memory":
+        memory_id = arguments["memory_id"]
+        try:
+            points = qdrant.retrieve(collection_name="memories", ids=[memory_id], with_vectors=True)
+            if not points:
+                return [TextContent(type="text", text=f"Error: Memory {memory_id} not found")]
+            point = points[0]
+            if point.payload.get("user") != current_user:
+                return [TextContent(type="text", text="Error: Unauthorized - cannot update other user's memories")]
+            if point.payload.get("deleted", False):
+                return [TextContent(type="text", text=f"Error: Memory {memory_id} is deleted")]
+            payload = point.payload
+            updatable = ["memory_type", "scope", "entity", "project", "task_id", "tags", "status", "priority"]
+            for field in updatable:
+                if field in arguments:
+                    payload[field] = arguments[field]
+            # Re-embed if text changed
+            if "text" in arguments:
+                payload["text"] = arguments["text"]
+                new_embedding = list(embedder.embed([arguments["text"]]))[0].tolist()
+                qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=new_embedding, payload={**payload, "updated_at": datetime.now().isoformat()})])
+            else:
+                payload["updated_at"] = datetime.now().isoformat()
+                qdrant.set_payload(collection_name="memories", payload=payload, points=[memory_id])
+            logger.info(f"Updated memory: {memory_id} for user: {current_user}")
+            return [TextContent(type="text", text=json.dumps({"status": "updated", "memory_id": memory_id}))]
+        except Exception as e:
+            logger.error(f"Failed to update memory: {e}")
             return [TextContent(type="text", text=f"Error: {str(e)}")]
 
     return [TextContent(type="text", text="Unknown tool")]
