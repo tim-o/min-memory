@@ -53,4 +53,4 @@ jobs:
         run: |
           gcloud compute ssh ${{ env.GCP_VM_NAME }} \
             --zone=${{ env.GCP_VM_ZONE }} \
-            --command="cd /opt/mcp-memory && git pull origin main && docker compose pull && docker compose up -d"
+            --command="cd /opt/mcp-memory && sudo git pull origin main && sudo docker compose pull && sudo docker compose up -d --build"
