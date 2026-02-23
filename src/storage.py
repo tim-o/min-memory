@@ -2,7 +2,6 @@
 
 import logging
 import os
-import pathlib
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, Filter, FieldCondition, MatchValue, MatchAny
@@ -10,8 +9,7 @@ from qdrant_client.models import (
 from fastembed import TextEmbedding
 
 # --- Configuration ---
-DATA_DIR = pathlib.Path(os.getenv("MCP_DATA_DIR", pathlib.Path.home() / ".local" / "share" / "mcp-memory-http"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # --- Initialize Storage Clients ---
 logger.info("Initializing storage...")
-qdrant = QdrantClient(path=str(DATA_DIR / "qdrant"))
+qdrant = QdrantClient(url=QDRANT_URL)
 embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 # --- Helper Functions ---

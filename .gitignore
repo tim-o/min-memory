@@ -10,6 +10,7 @@ __pycache__/
 *.backup
 
 # Local data
+backup/
 .tmp-data/
 .test-data/
 mcp-test-*/

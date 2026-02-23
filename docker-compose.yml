@@ -1,44 +1,40 @@
-version: '3.8'
-
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: qdrant
+    volumes:
+      - ${QDRANT_STORAGE_PATH:-qdrant-data}:/qdrant/storage
+    restart: unless-stopped
+
   mcp-memory:
     build: .
     container_name: mcp-memory-server
-    ports:
-      - "127.0.0.1:8080:8080"
     environment:
       - AUTH0_DOMAIN=${AUTH0_DOMAIN}
       - AUTH0_API_AUDIENCE=${AUTH0_API_AUDIENCE}
-      - MCP_DATA_DIR=/var/lib/data
+      - TRUSTED_BACKEND_KEY=${TRUSTED_BACKEND_KEY}
+      - QDRANT_URL=http://qdrant:6333
       - PORT=8080
-    volumes:
-      - mcp-data:/var/lib/data
+    depends_on:
+      - qdrant
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
 
   caddy:
     image: caddy:2-alpine
-    container_name: mcp-caddy
+    container_name: caddy
     ports:
-      - "80:80"
       - "443:443"
+      - "80:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    restart: unless-stopped
     depends_on:
       - mcp-memory
+      - qdrant
+    restart: unless-stopped
 
 volumes:
-  mcp-data:
-    driver: local
+  qdrant-data:  # used locally; production uses QDRANT_STORAGE_PATH bind mount
   caddy-data:
-    driver: local
   caddy-config:
-    driver: local
