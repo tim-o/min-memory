@@ -40,7 +40,7 @@ The system enables AI agents to remember conversations, facts, and context acros
                  ↓
         ┌────────────────┐
         │  Qdrant DB     │
-        │ (local file)   │
+        │ (standalone)   │
         └────────────────┘
 ```
 
@@ -65,7 +65,7 @@ The system enables AI agents to remember conversations, facts, and context acros
 
 ### 3.3. Storage Layer
 
-*   **Database:** **Qdrant** is used as the vector database. It is run in a local, file-based mode, persisting data to the directory specified by the `MCP_DATA_DIR` environment variable.
+*   **Database:** **Qdrant** is used as the vector database. It runs as a standalone service (via docker-compose) and is accessed over HTTP. Data is persisted to a GCE persistent disk mounted at `/mnt/data/qdrant`.
 *   **Collection:** A single Qdrant collection named `memories` stores all memory records for all users.
 *   **Data Model:** The architecture is **vector-only**. All information, including structured metadata, is stored in the payload of each point in the vector collection. There is no separate relational database.
 *   **Indexing:** To ensure fast and efficient filtering, payload indexes are created on the following fields: `user`, `scope`, `project`, `memory_type`, `entity`, and `deleted`.

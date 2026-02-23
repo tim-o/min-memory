@@ -54,7 +54,7 @@ A hierarchical, persistent memory system for AI assistants using the [Model Cont
              │
              ▼
 ┌──────────────────────────────────┐
-│  Qdrant Vector DB (local file)   │
+│  Qdrant Vector DB (standalone)   │
 │  BAAI/bge-small-en-v1.5 (384d)  │
 └──────────────────────────────────┘
 ```
@@ -77,33 +77,27 @@ pip install -r requirements.txt
 # Set environment variables
 export AUTH0_DOMAIN="your-tenant.us.auth0.com"
 export AUTH0_API_AUDIENCE="https://your-domain.com"
-export MCP_DATA_DIR="$HOME/.local/share/mcp-memory-http"
 
-# Run server
+# Run server (requires a Qdrant instance at localhost:6333)
 python -m src.main
 ```
 
-### Docker
+### Docker Compose (recommended)
+
+Runs Qdrant, the MCP server, and Caddy (HTTPS) together:
 
 ```bash
-# Build
-docker build -t min-memory .
+# Create .env with your secrets
+cat > .env <<EOF
+AUTH0_DOMAIN=your-tenant.us.auth0.com
+AUTH0_API_AUDIENCE=https://your-domain.com
+TRUSTED_BACKEND_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+EOF
 
-# Run
-docker run -p 8080:8080 \
-  -e AUTH0_DOMAIN="your-tenant.us.auth0.com" \
-  -e AUTH0_API_AUDIENCE="https://your-domain.com" \
-  -v mcp-data:/var/lib/data \
-  min-memory
+docker compose up -d
 ```
 
-Or with the included `docker-compose.yml` (also runs Caddy for HTTPS):
-
-```bash
-AUTH0_DOMAIN="your-tenant.us.auth0.com" \
-AUTH0_API_AUDIENCE="https://your-domain.com" \
-docker compose up
-```
+Qdrant dashboard available at `http://localhost:6333/dashboard`.
 
 ### Connecting Claude Code
 
@@ -118,7 +112,7 @@ docker compose up
 - **Server:** Python + Starlette (ASGI)
 - **Transport:** `fastapi-mcp` (Streaming HTTP)
 - **Auth:** Auth0 (OAuth 2.1) + [MCPAuth](https://mcp-auth.dev) (JWT validation)
-- **Vector DB:** [Qdrant](https://qdrant.tech) (local storage)
+- **Vector DB:** [Qdrant](https://qdrant.tech) (standalone, via docker-compose)
 - **Embeddings:** [FastEmbed](https://qdrant.github.io/fastembed/) (`BAAI/bge-small-en-v1.5`, 384-dim)
 - **Reverse Proxy:** Caddy (automatic HTTPS)
 
