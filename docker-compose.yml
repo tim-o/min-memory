@@ -2,6 +2,8 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.13.6
     container_name: qdrant
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
     volumes:
       - ${QDRANT_STORAGE_PATH:-qdrant-data}:/qdrant/storage
     restart: unless-stopped
@@ -14,6 +16,7 @@ services:
       - AUTH0_API_AUDIENCE=${AUTH0_API_AUDIENCE}
       - TRUSTED_BACKEND_KEY=${TRUSTED_BACKEND_KEY}
       - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
       - PORT=8080
     depends_on:
       - qdrant

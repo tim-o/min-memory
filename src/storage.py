@@ -10,6 +10,7 @@ from fastembed import TextEmbedding
 
 # --- Configuration ---
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # --- Initialize Storage Clients ---
 logger.info("Initializing storage...")
-qdrant = QdrantClient(url=QDRANT_URL)
+qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 # --- Helper Functions ---
