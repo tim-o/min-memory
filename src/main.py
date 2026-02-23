@@ -1,5 +1,6 @@
 # src/main.py
 
+import hmac
 import logging
 import json
 import os
@@ -14,6 +15,7 @@ from fastapi_mcp.transport.http import FastApiHttpSessionManager
 
 # Local module imports
 from . import auth
+from .auth import _current_request, TRUSTED_BACKEND_KEY
 from . import tools
 
 logger = logging.getLogger(__name__)
@@ -151,17 +153,35 @@ class AuthGuardMiddleware(BaseHTTPMiddleware):
         self._bearer = auth_middleware_cls(app)
 
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        if (
-            request.method.upper() == "OPTIONS"
-            or path in EXEMPT_PATHS
-            or any(path.startswith(prefix) for prefix in EXEMPT_PREFIXES)
-        ):
-            return await call_next(request)
-        if path == "/mcp" and "authorization" not in request.headers:
-            logger.info(f"MCP request without auth header from {request.client.host if request.client else 'unknown'}")
-            return Response(status_code=401, content=b"", headers={"Content-Length": "0"})
-        return await self._bearer.dispatch(request, call_next)
+        # Always set the context var so get_current_user() can read headers
+        token = _current_request.set(request)
+        try:
+            path = request.url.path
+            if (
+                request.method.upper() == "OPTIONS"
+                or path in EXEMPT_PATHS
+                or any(path.startswith(prefix) for prefix in EXEMPT_PREFIXES)
+            ):
+                return await call_next(request)
+
+            # Trusted backend key bypasses OAuth entirely
+            if TRUSTED_BACKEND_KEY:
+                backend_key = request.headers.get("x-backend-key")
+                if backend_key and hmac.compare_digest(backend_key, TRUSTED_BACKEND_KEY):
+                    user_id = request.headers.get("x-user-id")
+                    if not user_id:
+                        return JSONResponse(
+                            {"error": "missing_user_id", "error_description": "X-User-Id header required with backend key auth"},
+                            status_code=400,
+                        )
+                    return await call_next(request)
+
+            if path == "/mcp" and "authorization" not in request.headers:
+                logger.info(f"MCP request without auth header from {request.client.host if request.client else 'unknown'}")
+                return Response(status_code=401, content=b"", headers={"Content-Length": "0"})
+            return await self._bearer.dispatch(request, call_next)
+        finally:
+            _current_request.reset(token)
 
 class WWWAuthenticateMiddleware(BaseHTTPMiddleware):
     """Ensures 401/403 responses advertise resource metadata per RFC 9728."""
