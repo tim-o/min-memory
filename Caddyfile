@@ -8,8 +8,11 @@ memory.tim-obrien.com {
         flush_interval -1
     }
 
-    # Qdrant dashboard
-    handle_path /qdrant/* {
+    # Qdrant dashboard and API
+    handle /dashboard* {
+        reverse_proxy qdrant:6333
+    }
+    handle /collections* {
         reverse_proxy qdrant:6333
     }
 
