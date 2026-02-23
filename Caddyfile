@@ -3,14 +3,19 @@
 }
 
 memory.tim-obrien.com {
-    # MCP server — default route
-    reverse_proxy mcp-memory:8080 {
-        flush_interval -1
+    # Qdrant dashboard and API
+    handle /dashboard* {
+        reverse_proxy qdrant:6333
+    }
+    handle /collections* {
+        reverse_proxy qdrant:6333
     }
 
-    # Qdrant dashboard
-    handle_path /qdrant/* {
-        reverse_proxy qdrant:6333
+    # MCP server — everything else
+    handle {
+        reverse_proxy mcp-memory:8080 {
+            flush_interval -1
+        }
     }
 
     encode gzip
