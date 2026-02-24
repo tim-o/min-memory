@@ -123,6 +123,39 @@ http_session_manager = FastApiHttpSessionManager(tools.mcp_server, json_response
 async def handle_http_transport(request: Request):
     return await http_session_manager.handle_fastapi_request(request)
 
+# --- Direct REST API (server-to-server, bypasses MCP transport) ---
+
+async def api_call_tool(request: Request):
+    """Direct tool invocation for trusted backend clients.
+
+    POST /api/tools/call
+    Headers: X-Backend-Key, X-User-Id, Content-Type: application/json
+    Body: {"tool_name": "store_memory", "arguments": {...}}
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+
+    tool_name = body.get("tool_name")
+    arguments = body.get("arguments", {})
+
+    if not tool_name:
+        return JSONResponse({"error": "missing_tool_name"}, status_code=400)
+
+    result = await tools.call_tool(tool_name, arguments)
+
+    # call_tool returns list[TextContent]; extract the text
+    if result and len(result) > 0:
+        text = result[0].text
+        # Try to parse as JSON for a clean response
+        try:
+            return JSONResponse(json.loads(text))
+        except (json.JSONDecodeError, TypeError):
+            return JSONResponse({"result": text})
+
+    return JSONResponse({"error": "no_result"}, status_code=500)
+
 # --- Health Check ---
 
 async def health_check(request: Request):
@@ -210,6 +243,7 @@ def create_app():
         routes=[
             Route("/health", endpoint=health_check, methods=["GET"]),
             Route("/mcp", endpoint=handle_http_transport, methods=["GET", "POST"]),
+            Route("/api/tools/call", endpoint=api_call_tool, methods=["POST"]),
             Route("/register", endpoint=register_redirect, methods=["POST", "OPTIONS"]),
             Route("/oauth/token", endpoint=oauth_token_redirect, methods=["GET", "POST"]),
             Route("/.well-known/oauth-protected-resource", endpoint=oauth_protected_resource_metadata, methods=["GET"]),
