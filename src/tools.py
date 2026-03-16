@@ -1,5 +1,6 @@
 # src/tools.py
 
+import asyncio
 import logging
 import json
 import os
@@ -11,7 +12,9 @@ from mcp.types import Tool, TextContent
 from qdrant_client.models import PointStruct
 
 # Local module imports
-from .storage import qdrant, embedder, build_filter
+from .storage import qdrant, embedder, build_filter, find_by_entity, async_update_access_tracking
+from .scoring import compute_recency_score, blend_scores
+from .entities import entity_tree
 from .auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -136,7 +139,19 @@ async def list_tools() -> list[Tool]:
                     "task_id": {"type": "string"},
                     "include_related": {"type": "boolean", "default": True},
                     "limit": {"type": "integer", "default": 10},
-                    "score_threshold": {"type": "number", "default": 0.0}
+                    "score_threshold": {"type": "number", "default": 0.0},
+                    "recency_weight": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "default": 0.3,
+                        "description": "Blend weight for recency vs similarity. 0.0=pure similarity, 1.0=heavily favor recent."
+                    },
+                    "status_filter": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter project_context memories by status. Default: ['active'] for project-scoped queries."
+                    }
                 },
                 "required": ["query"]
             }
@@ -243,6 +258,69 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["memory_id"]
             }
+        ),
+        Tool(
+            name="sync_session",
+            description="Structured session sync: store decisions, status updates, learnings, and feedback with automatic type/scope inference and upsert semantics.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Project identifier. Must match a root entity in the entity tree, or 'global'."
+                    },
+                    "decisions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "entity": {"type": "string"},
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                                "supersedes": {"type": "string", "description": "Memory ID this decision supersedes"}
+                            },
+                            "required": ["text", "entity"]
+                        }
+                    },
+                    "status_updates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity": {"type": "string"},
+                                "status": {"type": "string", "enum": ["active", "completed", "superseded", "parked"]},
+                                "text": {"type": "string"}
+                            },
+                            "required": ["entity", "status", "text"]
+                        }
+                    },
+                    "learnings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "entity": {"type": "string"},
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                                "supersedes": {"type": "string", "description": "Memory ID this learning supersedes"}
+                            },
+                            "required": ["text", "entity"]
+                        }
+                    },
+                    "feedback": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity": {"type": "string"},
+                                "text": {"type": "string"}
+                            },
+                            "required": ["entity", "text"]
+                        }
+                    }
+                },
+                "required": ["project"]
+            }
         )
     ]
 
@@ -264,6 +342,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         for result in response.points:
             title = result.payload.get("text", "")[:80]
             search_results.append({"id": result.id, "title": title, "url": f"mcp://memory/{result.id}"})
+
+        # Fire-and-forget access tracking (AC-19)
+        returned_ids = [result.id for result in response.points]
+        asyncio.ensure_future(async_update_access_tracking(returned_ids))
+
         return [TextContent(type="text", text=json.dumps(search_results, indent=2))]
 
     elif name == "fetch":
@@ -320,19 +403,61 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         project = arguments.get("project")
         explicit_scope = arguments.get("scope")
         limit = arguments.get("limit", 10)
-        if project and not explicit_scope:
+        recency_weight = arguments.get("recency_weight", 0.3)
+        status_filter = arguments.get("status_filter")
+        is_project_scope = bool(project and not explicit_scope)
+
+        # Fetch extra results to account for post-filtering
+        fetch_limit = limit * 2 if is_project_scope else limit
+
+        if is_project_scope:
             global_filter = build_filter(user=current_user, scope="global", memory_type=arguments.get("memory_type"), task_id=arguments.get("task_id"))
             project_filter = build_filter(user=current_user, project=project, memory_type=arguments.get("memory_type"), task_id=arguments.get("task_id"))
-            global_response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=global_filter, limit=limit // 2)
-            project_response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=project_filter, limit=limit // 2)
-            results = sorted(global_response.points + project_response.points, key=lambda x: x.score, reverse=True)[:limit]
+            global_response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=global_filter, limit=fetch_limit // 2)
+            project_response = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=project_filter, limit=fetch_limit // 2)
+            results = global_response.points + project_response.points
         else:
             query_filter = build_filter(user=current_user, scope=explicit_scope, project=project, memory_type=arguments.get("memory_type"), task_id=arguments.get("task_id"))
-            results = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=query_filter, limit=limit).points
+            results = qdrant.query_points(collection_name="memories", query=query_embedding, query_filter=query_filter, limit=fetch_limit).points
+
+        # Post-filter: status filtering for project_context memories (AC-11, AC-12)
+        effective_status_filter = status_filter
+        if is_project_scope and status_filter is None:
+            effective_status_filter = ["active"]
+
+        if effective_status_filter is not None:
+            filtered = []
+            for r in results:
+                if r.payload.get("memory_type") == "project_context":
+                    status = r.payload.get("status")
+                    # status=None passes through for backward compat (AC-12)
+                    if status is None or status in effective_status_filter:
+                        filtered.append(r)
+                else:
+                    # Non-project_context results are never status-filtered
+                    filtered.append(r)
+            results = filtered
+
         score_threshold = arguments.get("score_threshold", 0.0)
-        filtered_results = [r for r in results if r.score >= score_threshold]
+        results = [r for r in results if r.score >= score_threshold]
+
+        # Apply recency re-ranking (AC-10, AC-13)
+        if recency_weight > 0.0:
+            scored = []
+            for r in results:
+                recency = compute_recency_score(r.payload.get("created_at"))
+                blended = blend_scores(r.score, recency, recency_weight)
+                scored.append((r, blended))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            scored = scored[:limit]
+            blended_map = {id(r): s for r, s in scored}
+            results = [r for r, _ in scored]
+        else:
+            results = sorted(results, key=lambda x: x.score, reverse=True)[:limit]
+            blended_map = {}
+
         context = []
-        for result in filtered_results:
+        for result in results:
             memory = {
                 "id": result.id,
                 "text": result.payload["text"],
@@ -340,7 +465,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "scope": result.payload["scope"],
                 "entity": result.payload["entity"],
                 "project": result.payload.get("project"),
-                "score": result.score,
+                "score": blended_map.get(id(result), result.score),
                 "created_at": result.payload.get("created_at"),
                 "tags": result.payload.get("tags", [])
             }
@@ -359,6 +484,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     if related_memories:
                         memory["related_memories"] = related_memories
             context.append(memory)
+
+        # Fire-and-forget access tracking (AC-19)
+        returned_ids = [result.id for result in results]
+        asyncio.ensure_future(async_update_access_tracking(returned_ids))
+
         return [TextContent(type="text", text=json.dumps(context, indent=2))]
 
     elif name == "set_project":
@@ -507,5 +637,261 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         except Exception as e:
             logger.error(f"Failed to update memory: {e}")
             return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+    elif name == "sync_session":
+        project = arguments["project"]
+
+        # AC-08: Validate project against entity tree
+        project_error = entity_tree.validate_project(project)
+        if project_error:
+            return [TextContent(type="text", text=json.dumps({"error": project_error}))]
+
+        warnings = []
+        details = {"decisions": [], "status_updates": [], "learnings": [], "feedback": []}
+        created_count = 0
+        updated_count = 0
+
+        scope = "global" if project == "global" else "project"
+
+        # --- decisions: always append (new records) ---
+        for item in arguments.get("decisions", []):
+            entity = item["entity"]
+            # AC-09: Validate entity
+            entity_warning = entity_tree.validate_entity(entity)
+            if entity_warning:
+                warnings.append(entity_warning)
+
+            text = item["text"]
+            embedding = list(embedder.embed([text]))[0].tolist()
+            timestamp = datetime.now().isoformat()
+            memory_id = generate_memory_id(entity + ":decision", timestamp)
+            payload = {
+                "user": current_user,
+                "text": text,
+                "memory_type": "episodic",
+                "scope": scope,
+                "entity": entity,
+                "project": project if project != "global" else None,
+                "task_id": None,
+                "related_to": [],
+                "relation_types": {},
+                "tags": item.get("tags", []),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "status": None,
+                "priority": None,
+                "deleted": False,
+            }
+            qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=embedding, payload=payload)])
+            created_count += 1
+            detail = {"memory_id": memory_id, "action": "created"}
+
+            # AC-06: Handle supersedes
+            if item.get("supersedes"):
+                superseded_id = item["supersedes"]
+                try:
+                    sup_points = qdrant.retrieve(collection_name="memories", ids=[superseded_id])
+                    if sup_points and sup_points[0].payload.get("user") == current_user:
+                        sup_payload = sup_points[0].payload
+                        related_to = sup_payload.get("related_to", [])
+                        if memory_id not in related_to:
+                            related_to.append(memory_id)
+                        relation_types = sup_payload.get("relation_types", {})
+                        relation_types[memory_id] = "supersedes"
+                        sup_payload["related_to"] = related_to
+                        sup_payload["relation_types"] = relation_types
+                        sup_payload["updated_at"] = datetime.now().isoformat()
+                        qdrant.set_payload(collection_name="memories", payload=sup_payload, points=[superseded_id])
+                        # Also add reverse link on the new memory
+                        payload["related_to"] = [superseded_id]
+                        payload["relation_types"] = {superseded_id: "supersedes"}
+                        payload["updated_at"] = datetime.now().isoformat()
+                        qdrant.set_payload(collection_name="memories", payload=payload, points=[memory_id])
+                    else:
+                        warnings.append(f"Supersedes target '{superseded_id}' not found or not owned by user")
+                except Exception as e:
+                    logger.warning(f"Failed to create supersedes link for {superseded_id}: {e}")
+                    warnings.append(f"Failed to create supersedes link for '{superseded_id}'")
+
+            details["decisions"].append(detail)
+
+        # --- status_updates: upsert by (entity, user, project, memory_type="project_context") ---
+        for item in arguments.get("status_updates", []):
+            entity = item["entity"]
+            entity_warning = entity_tree.validate_entity(entity)
+            if entity_warning:
+                warnings.append(entity_warning)
+
+            text = item["text"]
+            status = item["status"]
+            embedding = list(embedder.embed([text]))[0].tolist()
+            timestamp = datetime.now().isoformat()
+
+            # Look for existing record to upsert
+            existing = find_by_entity(
+                user=current_user, entity=entity,
+                project=project if project != "global" else None,
+                memory_type="project_context"
+            )
+
+            if len(existing) > 1:
+                warnings.append(f"Multiple existing records for entity '{entity}' - updating most recent")
+
+            if existing:
+                # Update existing record
+                point = existing[0]
+                memory_id = point.id
+                old_payload = point.payload
+                old_payload["text"] = text
+                old_payload["status"] = status
+                old_payload["updated_at"] = timestamp
+                # Re-embed with new text
+                qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=embedding, payload=old_payload)])
+                updated_count += 1
+                details["status_updates"].append({"memory_id": memory_id, "action": "updated", "previous_id": memory_id})
+            else:
+                # Create new record
+                memory_id = generate_memory_id(entity + ":status", timestamp)
+                payload = {
+                    "user": current_user,
+                    "text": text,
+                    "memory_type": "project_context",
+                    "scope": scope,
+                    "entity": entity,
+                    "project": project if project != "global" else None,
+                    "task_id": None,
+                    "related_to": [],
+                    "relation_types": {},
+                    "tags": [],
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "status": status,
+                    "priority": None,
+                    "deleted": False,
+                }
+                qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=embedding, payload=payload)])
+                created_count += 1
+                details["status_updates"].append({"memory_id": memory_id, "action": "created"})
+
+        # --- learnings: always append (new records) ---
+        for item in arguments.get("learnings", []):
+            entity = item["entity"]
+            entity_warning = entity_tree.validate_entity(entity)
+            if entity_warning:
+                warnings.append(entity_warning)
+
+            text = item["text"]
+            embedding = list(embedder.embed([text]))[0].tolist()
+            timestamp = datetime.now().isoformat()
+            memory_id = generate_memory_id(entity + ":learning", timestamp)
+            payload = {
+                "user": current_user,
+                "text": text,
+                "memory_type": "episodic",
+                "scope": scope,
+                "entity": entity,
+                "project": project if project != "global" else None,
+                "task_id": None,
+                "related_to": [],
+                "relation_types": {},
+                "tags": item.get("tags", []),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "status": None,
+                "priority": None,
+                "deleted": False,
+            }
+            qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=embedding, payload=payload)])
+            created_count += 1
+            detail = {"memory_id": memory_id, "action": "created"}
+
+            # AC-06: Handle supersedes
+            if item.get("supersedes"):
+                superseded_id = item["supersedes"]
+                try:
+                    sup_points = qdrant.retrieve(collection_name="memories", ids=[superseded_id])
+                    if sup_points and sup_points[0].payload.get("user") == current_user:
+                        sup_payload = sup_points[0].payload
+                        related_to = sup_payload.get("related_to", [])
+                        if memory_id not in related_to:
+                            related_to.append(memory_id)
+                        relation_types = sup_payload.get("relation_types", {})
+                        relation_types[memory_id] = "supersedes"
+                        sup_payload["related_to"] = related_to
+                        sup_payload["relation_types"] = relation_types
+                        sup_payload["updated_at"] = datetime.now().isoformat()
+                        qdrant.set_payload(collection_name="memories", payload=sup_payload, points=[superseded_id])
+                        payload["related_to"] = [superseded_id]
+                        payload["relation_types"] = {superseded_id: "supersedes"}
+                        payload["updated_at"] = datetime.now().isoformat()
+                        qdrant.set_payload(collection_name="memories", payload=payload, points=[memory_id])
+                    else:
+                        warnings.append(f"Supersedes target '{superseded_id}' not found or not owned by user")
+                except Exception as e:
+                    logger.warning(f"Failed to create supersedes link for {superseded_id}: {e}")
+                    warnings.append(f"Failed to create supersedes link for '{superseded_id}'")
+
+            details["learnings"].append(detail)
+
+        # --- feedback: upsert by (entity, user, memory_type="core_identity") ---
+        for item in arguments.get("feedback", []):
+            entity = item["entity"]
+            entity_warning = entity_tree.validate_entity(entity)
+            if entity_warning:
+                warnings.append(entity_warning)
+
+            text = item["text"]
+            embedding = list(embedder.embed([text]))[0].tolist()
+            timestamp = datetime.now().isoformat()
+
+            existing = find_by_entity(
+                user=current_user, entity=entity,
+                memory_type="core_identity"
+            )
+
+            if len(existing) > 1:
+                warnings.append(f"Multiple existing feedback records for entity '{entity}' - updating most recent")
+
+            if existing:
+                point = existing[0]
+                memory_id = point.id
+                old_payload = point.payload
+                old_payload["text"] = text
+                old_payload["updated_at"] = timestamp
+                qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=embedding, payload=old_payload)])
+                updated_count += 1
+                details["feedback"].append({"memory_id": memory_id, "action": "updated", "previous_id": memory_id})
+            else:
+                memory_id = generate_memory_id(entity + ":feedback", timestamp)
+                payload = {
+                    "user": current_user,
+                    "text": text,
+                    "memory_type": "core_identity",
+                    "scope": "global",
+                    "entity": entity,
+                    "project": None,
+                    "task_id": None,
+                    "related_to": [],
+                    "relation_types": {},
+                    "tags": [],
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "status": None,
+                    "priority": None,
+                    "deleted": False,
+                }
+                qdrant.upsert(collection_name="memories", points=[PointStruct(id=memory_id, vector=embedding, payload=payload)])
+                created_count += 1
+                details["feedback"].append({"memory_id": memory_id, "action": "created"})
+
+        result = {
+            "summary": {
+                "created": created_count,
+                "updated": updated_count,
+                "warnings": warnings,
+            },
+            "details": details,
+        }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     return [TextContent(type="text", text="Unknown tool")]
