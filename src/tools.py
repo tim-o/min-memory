@@ -201,7 +201,12 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "scope": {"type": "string"},
                     "project": {"type": "string"},
-                    "memory_type": {"type": "string"}
+                    "memory_type": {"type": "string"},
+                    "show_tree": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "When true, include the configured entity tree structure alongside observed entities."
+                    }
                 },
                 "required": []
             }
@@ -320,6 +325,28 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["project"]
+            }
+        ),
+        Tool(
+            name="register_entity",
+            description="Register a new entity in the entity tree at runtime. Persists to config file if writable.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "Dotted entity name (e.g., 'slvr.wholesale')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Human-readable description of this entity"
+                    },
+                    "parent": {
+                        "type": "string",
+                        "description": "Parent entity name. Inferred from dotted prefix if omitted."
+                    }
+                },
+                "required": ["entity", "description"]
             }
         )
     ]
@@ -563,7 +590,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if updated and updated > entities_map[entity]["last_updated"]:
                 entities_map[entity]["last_updated"] = updated
         entities = list(entities_map.values())
-        return [TextContent(type="text", text=json.dumps({"entities": entities, "count": len(entities)}, indent=2))]
+        response = {"entities": entities, "count": len(entities)}
+
+        # AC-16: Optionally include configured entity tree
+        if arguments.get("show_tree", False):
+            response["tree"] = entity_tree.get_tree()
+
+        return [TextContent(type="text", text=json.dumps(response, indent=2))]
 
     elif name == "search_entities":
         query = arguments["query"].lower()
@@ -892,6 +925,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             },
             "details": details,
         }
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    elif name == "register_entity":
+        entity_name = arguments["entity"]
+        description = arguments["description"]
+        parent = arguments.get("parent")
+        result = entity_tree.register_entity(entity_name, description, parent)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     return [TextContent(type="text", text="Unknown tool")]
