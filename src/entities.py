@@ -188,5 +188,6 @@ class EntityTree:
         return set(self._all_entities)
 
 
-# Module-level singleton
+# Module-level singleton — auto-loads from default config
 entity_tree = EntityTree()
+entity_tree.load()
