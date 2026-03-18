@@ -4,25 +4,31 @@ A hierarchical, persistent memory system for AI assistants using the [Model Cont
 
 ## Features
 
+- **Structured session sync** — `sync_session` tool with auto-typing, upsert semantics, and entity validation
 - **Hierarchical memory scopes** — global, project, and task-level context
+- **Recency-weighted retrieval** — blends semantic similarity with temporal relevance
+- **Entity tree** — YAML-configured entity hierarchy with runtime registration and validation
 - **Semantic search** — vector similarity via Qdrant + FastEmbed
+- **Access tracking** — automatic access_count and last_accessed_at on retrieval
 - **OAuth 2.1 authentication** — Auth0 integration with per-user data isolation
 - **Streaming HTTP transport** — MCP-compliant `/mcp` endpoint
-- **Soft delete** — non-destructive memory removal
 
 ### MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `store_memory` | Store memories with hierarchical scoping |
-| `retrieve_context` | Semantic search with metadata filtering |
+| `sync_session` | **Structured session sync** — store decisions, status updates, learnings, and feedback with auto-typing and upsert semantics |
+| `store_memory` | Store a single memory with explicit type/scope (use `sync_session` for structured writes) |
+| `retrieve_context` | Semantic search with recency weighting and status filtering |
 | `search` | Quick search across all memories |
 | `fetch` | Retrieve a specific memory by ID |
 | `set_project` | Validate/create a project context |
 | `get_context_info` | Environment detection (pwd, git, etc.) |
-| `list_entities` | Browse known entities |
+| `list_entities` | Browse known entities with optional entity tree view |
 | `search_entities` | Fuzzy entity matching |
+| `register_entity` | Add new entities to the entity tree at runtime |
 | `link_memories` | Create relationships between memories |
+| `update_memory` | Modify an existing memory's text or metadata |
 | `delete_memory` | Soft-delete a memory |
 
 ## Architecture
