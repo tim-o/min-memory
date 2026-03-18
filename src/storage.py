@@ -1,7 +1,9 @@
 # src/storage.py
 
+import asyncio
 import logging
 import os
+from datetime import datetime
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, Filter, FieldCondition, MatchValue, MatchAny
@@ -75,6 +77,62 @@ def setup_qdrant():
                 field_schema="keyword"
             )
         logger.info("Created payload indexes.")
+
+def find_by_entity(user: str, entity: str, project: str | None = None,
+                   memory_type: str | None = None) -> list:
+    """Find memories matching exact entity + user + optional project/type.
+
+    Returns points sorted by updated_at descending. Used for upsert logic.
+    """
+    scroll_filter = build_filter(
+        user=user, entity=entity, project=project, memory_type=memory_type
+    )
+    results, _ = qdrant.scroll(
+        collection_name="memories",
+        scroll_filter=scroll_filter,
+        limit=100,
+        with_payload=True,
+        with_vectors=False,
+    )
+    # Sort by updated_at descending (most recent first)
+    results.sort(
+        key=lambda p: p.payload.get("updated_at", ""),
+        reverse=True,
+    )
+    return results
+
+
+def update_access_tracking(memory_ids: list[str]) -> None:
+    """Increment access_count and set last_accessed_at on returned memories.
+
+    Fire-and-forget: errors are logged but do not propagate.
+    Treats missing access_count as 0 (AC-20).
+    """
+    if not memory_ids:
+        return
+
+    now = datetime.now().isoformat()
+    try:
+        points = qdrant.retrieve(collection_name="memories", ids=memory_ids, with_payload=True)
+        for point in points:
+            current_count = point.payload.get("access_count", 0)
+            qdrant.set_payload(
+                collection_name="memories",
+                payload={
+                    "access_count": current_count + 1,
+                    "last_accessed_at": now
+                },
+                points=[point.id]
+            )
+    except Exception as e:
+        logger.warning(f"Failed to update access tracking for {len(memory_ids)} memories: {e}")
+
+
+async def async_update_access_tracking(memory_ids: list[str]) -> None:
+    """Async wrapper for access tracking updates (fire-and-forget)."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, update_access_tracking, memory_ids)
+
 
 # Initialize the database on module import
 setup_qdrant()

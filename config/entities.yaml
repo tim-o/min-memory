@@ -1,0 +1,22 @@
+# config/entities.yaml
+entities:
+  tim:
+    description: "User identity and preferences"
+    children:
+      tim.preferences: "Communication style, workflow preferences"
+  slvr:
+    description: "Saint Lawrence Valley Roasters"
+    children:
+      slvr.marketing: "Paid acquisition, content, brand"
+      slvr.financials: "Revenue, FCF, compensation"
+      slvr.operations: "Production, shipping, roaster"
+  tsc:
+    description: "The Sunday Carpenter"
+    children:
+      tsc.classes: "Teaching events"
+      tsc.marketing: "Content, community"
+  system:
+    description: "Operating system infrastructure"
+    children:
+      system.memory-protocol: "Memory conventions"
+      system.sdlc: "Development workflow"
